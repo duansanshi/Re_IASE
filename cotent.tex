@@ -1,0 +1,461 @@
+\chapter{输入与自适应监督增强的层次化时空插补网络IASE-Net}
+第三章主要围绕扩散插补模型的推理加速展开，分别通过免训练采样压缩和单步蒸馏降低多步去噪与多样本聚合带来的计算开销。尽管这些方法能够显著提升扩散模型的推理效率，但其设计仍然依赖扩散插补框架或已有教师模型。对于低时延、轻量化部署等应用需求而言，\textbf{直接构建具备较强建模能力的非扩散单步插补模型，仍然是提高时间序列插补实用性的重要方向}。
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\linewidth]{浙江大学学位论文模板_zjuthesis/figure/iase_framework.pdf}
+    \caption{\label{fig:iase_frame}IASE-Net 层次化时空插补网络整体框架图} 
+\end{figure}
+
+非扩散模型具有推理路径短(单步插补)、部署简单和计算开销低等优势，但其插补精度往往受限于输入表示、时空依赖建模以及训练监督机制。基于此考虑，如图\ref{fig:iase_frame}所示，本章提出输入与自适应监督增强的层次化时空插补网络 IASE-Net（Input and Adaptive Supervision Enhancement Network），立足于结合上下采样与时空特征提取的层次化网络结构，并引入简单插值输入增强和自适应监督增强两种方式提升最终非扩散单步插补模型的表达能力。
+
+
+\section{基于简单插值的增强输入表示构造}
+
+\textbf{时间序列插补模型的输入形式会直接影响后续特征提取的难度}。已有方法中，较常见的做法是直接输入带缺失的部分观测矩阵，或者在此基础上加入线性插值得到的增强条件信息。前一种方式实现简单，但缺失区域缺少有效参考；后一种方式虽然能够提供连续输入，但其也引入了一定的归纳偏置，带来了相当程度的随机噪声，面对不同数据集时未必总能取得稳定收益。
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\linewidth]{浙江大学学位论文模板_zjuthesis/figure/PreImpute.pdf}
+    \caption{\label{fig:preimpute}预填充流程图} 
+\end{figure}
+
+基于这一考虑，本文不再将线性插值的预处理方式作为唯一选择，而是采用更一般的简单插值策略来构造模型输入。设原始时间序列为
+\begin{equation}
+\mathbf{X}\in\mathbb{R}^{N\times L},
+\end{equation}
+其中 \(N\) 表示变量数，\(L\) 表示时间长度。对应的观测掩码记为
+\begin{equation}
+\mathbf{M}\in \{0,1\}^{N\times L},
+\end{equation}
+其中 \(\mathbf{M}_{n,t}=1\) 表示该位置可观测，\(\mathbf{M}_{n,t}=0\) 表示该位置缺失。
+
+首先，对缺失位置进行简单插值，得到预填充序列
+\begin{equation}
+\mathbf{X}^{\mathrm{s}} = \mathcal{B}(\mathbf{X}, \mathbf{M}),
+\end{equation}
+其中 \(\mathcal{B}(\cdot)\) 表示简单插值算子，通常是前向插值或后向插值。在本文中，简单插值并不强调高精度恢复，而更接近于为缺失区域提供一个粗略但连续的初始参考。具体实现上，该算子可以采用前向填值或后向填值。这是因为不同数据集对插值方向的偏好并不一致：某些场景下前向填补表现更好，而另一些场景下后向填补更具优势。本文将简单插值作为统一的输入增强方式，以提升该表示在不同数据集上的适用性。
+
+
+这样的输入构造主要基于两个方面的考虑。其一，简单插值为缺失区域提供了粗略但连续的初始参考，有助于缓解模型在缺乏上下文时的估计困难。其二，简单插值相较于更复杂的插值方法而言，没有引入过多的随机性，使得模型能够更好的拟合和利用对应的预输入表示。    
+    
+\section{结合上下采样与时空特征提取的层次化网络结构}
+
+在完成输入表示构造后，本文进一步采用一种结合上下采样与时空特征提取的层次化网络结构进行插补建模。整体上，该网络结构通过多层时空间特征提取模块的堆叠完成复杂的时间序列插补任务；局部上，每层特征提取模块借鉴了 U-Net\cite{DBLP:conf/miccai/RonnebergerFB15} 的多尺度建模思想：先通过下采样在压缩的时间尺度上提取较为粗粒度的时空表示，再通过上采样逐步恢复分辨率，并在不同恢复阶段持续建模时间维与变量维上的相关性。相较于直接在原始分辨率下进行统一建模，这种层次化方式更有利于同时刻画长程依赖、多尺度动态模式以及跨变量之间的交互关系。
+
+\subsection{输入嵌入与位置编码}
+
+对每个位置 \((n,t)\)，模型将经过预插值后的输入值和对应掩码拼接后映射到隐空间：
+\begin{equation}
+\mathbf{z}_{n,t}^{(0)} = \mathrm{Proj}_{in}\bigl([x^{s}_{n,t},\, m_{n,t}]\bigr),
+\end{equation}
+其中 \(\mathrm{Proj}_{in}\) 表示线性投影层。
+
+考虑到插补任务同时依赖时间位置信息和变量身份信息，本文在输入中加入时间位置编码与特征位置编码。时间位置编码采用正弦余弦形式，记为
+\begin{equation}
+\mathbf{p}^{\mathrm{time}}_t \in \mathbb{R}^{d_t}.
+\end{equation}
+特征位置编码采用可学习参数，记为：
+\begin{equation}
+\mathbf{p}^{\mathrm{feat}}_n \in \mathbb{R}^{d_f}.
+\end{equation}
+将两者拼接并投影后，得到位置嵌入
+\begin{equation}
+\mathbf{p}_{n,t} = \mathrm{Proj}_{pe}\bigl([\mathbf{p}^{\mathrm{time}}_t,\mathbf{p}^{\mathrm{feat}}_n]\bigr).
+\end{equation}
+因此，网络初始输入可写为：
+\begin{equation}
+\mathbf{H}^{(0)}_{n,t} = \mathbf{z}_{n,t}^{(0)} + \mathbf{p}_{n,t}.
+\end{equation}
+
+\subsection{层次化时空特征提取模块}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\linewidth]{浙江大学学位论文模板_zjuthesis/figure/IASE-laye.pdf}
+    \caption{\label{fig:IASE_LAYER}层次化时空特征提取模块框架图} 
+\end{figure}
+如图\ref{fig:IASE_LAYER}所示，IASE-Net 的核心时空特征提取模块以输入嵌入模块输出的特征张量作为输入。设该特征张量为：
+\begin{equation}
+\mathbf{H}_{in}\in \mathbb{R}^{B\times N\times L\times d},
+\end{equation}
+其中 \(B\) 为批量大小，\(N\) 为变量数，\(L\) 为序列长度，\(d\) 为隐空间维度。
+
+为了构建 U-Net 风格的多尺度架构，模型首先保留当前尺度的输入作为最高分辨率的跳跃连接特征（即 $\mathbf{H}_{skip0} = \mathbf{H}_{in}$）。随后，模型进入核心的两级时间上下采样结构：
+
+\textbf{下采样路径}： 序列长度维度 \(L\) 先后被压缩至 \(L/3\) 和 \(L/12\)。在每次压缩时，模型先通过 Reshape 操作将相邻时间步的特征进行拼接，随后通过线性投影层控制特征通道的扩张：
+\begin{equation}
+\mathbf{H}_{(1)} = \mathrm{Proj}_{down1}\bigl(\mathrm{Reshape}_{L \rightarrow L/3}(\mathbf{H}_{in})\bigr) \in \mathbb{R}^{B\times N\times \frac{L}{3}\times 2d},
+\end{equation}
+\begin{equation}
+\mathbf{H}_{(2)} = \mathrm{Proj}_{down2}\bigl(\mathrm{Reshape}_{L/3 \rightarrow L/12}(\mathbf{H}_{(1)})\bigr) \in \mathbb{R}^{B\times N\times \frac{L}{12}\times 4d}.
+\end{equation}
+同时，模型保存各下采样阶段的输出来作为跳跃连接特征，记为 $\mathbf{H}_{skip1} = \mathbf{H}_{(1)}$ 与 $\mathbf{H}_{skip2} = \mathbf{H}_{(2)}$。
+
+\textbf{最粗尺度特征提取}： 在 $L/12$ 时间尺度下，模型沿变量维（特征维）执行 Transformer 编码，以在最大的时间感受野下建模全局变量间的交互，并将对应的跳跃连接融入：
+\begin{equation}
+\tilde{\mathbf{H}}_{(2)} = \mathrm{Trans}_{feat}^{(1)}(\mathbf{H}_{(2)}) + \mathbf{H}_{skip2}.
+\end{equation}
+
+\textbf{上采样与多尺度融合}： 模型通过线性投影与时间维度展开逐步恢复时间分辨率，在 $L/3$ 中间尺度执行第二级特征维 Transformer 并融合对应层的跳跃连接：
+\begin{equation}
+\tilde{\mathbf{H}}_{(1)} = \mathrm{Trans}_{feat}^{(2)}\bigl(\mathrm{UP}_{2\rightarrow1}(\tilde{\mathbf{H}}_{(2)})\bigr) + \mathbf{H}_{skip1}.
+\end{equation}
+
+进一步上采样恢复至原始分辨率 $L$ 后，模型融合最高分辨率的跳跃连接：
+\begin{equation}
+\tilde{\mathbf{H}}_{(0)} = \mathrm{UP}_{1\rightarrow0}(\tilde{\mathbf{H}}_{(1)}) + \mathbf{H}_{skip0}.
+\end{equation}
+
+\textbf{双路径时空精炼}： 在融合了所有多尺度特征并恢复原始分辨率后，模型连续通过时间路径和特征路径的 Transformer，对时空依赖进行最终的深度提取：
+\begin{equation}
+\mathbf{H}^{time} = \mathrm{Trans}_{time}\bigl(\mathrm{Reshape}_{BN,L}(\tilde{\mathbf{H}}_{(0)})\bigr),
+\end{equation}
+\begin{equation}
+\mathbf{H}^{feat} = \mathrm{Trans}_{feat}^{(3)}\bigl(\mathrm{Reshape}_{BL,N}(\mathbf{H}^{time})\bigr).
+\end{equation}
+
+最后，模块输出通过全局残差连接的形式与原始输入相加：
+\begin{equation}
+\mathbf{H}^{out} = \mathbf{H}^{feat} + \mathbf{H}_{in}.
+\end{equation}
+
+该层次化时空模块的作用可以从两个方面理解。下采样阶段使模型能够在更大时间范围内提取粗粒度模式，降低直接建模长序列的难度；恢复分辨率后的时空间Transformer则进一步细化时序内部依赖和跨变量关联。\textbf{二者结合后，模型既能利用多尺度时间信息，也能兼顾复杂的时空耦合关系}。
+
+\subsection{多块堆叠与输出预测}
+
+在整体实现中，本方法串联多个层次化时空模块，使特征表示在逐层传播中不断细化。设第 \(l\) 个模块的输出为
+\begin{equation}
+\mathbf{H}^{(l)} = \mathcal{G}^{(l)}(\mathbf{H}^{(l-1)}), \qquad l=1,2,\dots,L_b,
+\end{equation}
+其中 \(\mathcal{G}^{(l)}\) 表示第 \(l\) 个层次化时空块。
+
+每一层时空模块后的输出都可以经过两层线性映射得到中间预测结果，这些中间预测用于深度监督，最后一层特征经过同样的映射得到最终插补结果：
+\begin{equation}
+\hat{\mathbf{X}} = \mathrm{Proj}_{out}^{(2)}\Bigl(\sigma\bigl(\mathrm{Proj}_{out}^{(1)}(\mathbf{H}^{(L_b)})\bigr)\Bigr),
+\end{equation}
+其中 \(\sigma(\cdot)\) 表示非线性激活函数。
+
+
+
+\section{自适应监督增强机制}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.85\linewidth]{浙江大学学位论文模板_zjuthesis/figure/MidSupervision.pdf}
+    \caption{\label{fig:curriculum}自适应监督增强机制示意图}
+\end{figure}
+
+在本文的层次化网络结构中，由多个时空模块堆叠而成的深层网络能够在不同层次生成中间预测结果，因此如何对这些中间表示施加合理约束，成为影响模型优化效果的重要因素。传统做法通常对所有中间层施加统一的全局监督，但实验表明，这种方式难以充分适应不同层次表示能力的差异：浅层网络更适合学习基础且相对简单的模式，而深层网络则更擅长处理复杂的时空依赖与细粒度修正。若对所有层一视同仁地施加相同监督，容易使浅层承担过大的优化压力，从而削弱层次化建模的优势。
+
+基于此，本文提出了一种自适应监督增强机制，将中间层渐进监督与时间差分平滑约束纳入同一训练框架中。该机制一方面根据模型当前的预测状态，自适应地调整不同层次、不同位置上的监督强度，使中间层能够学习与其表示能力相匹配的优化目标；另一方面通过时间差分的平滑约束，增强预测序列的局部连续性与动态一致性。二者共同作用，使监督信号不再局限于简单的逐层重建误差，而是从层次分工和时序结构两个角度共同增强模型训练过程，从而提升整体优化的稳定性与有效性。
+
+\subsection{监督权重的自适应构建}
+
+设模型共有 $L_b$ 个层次化时空块，每一层输出 $\mathbf{H}^{(l)}$ 经共享预测头得到中间预测
+\begin{equation}
+\hat{\mathbf{X}}^{(l)} = \mathrm{PredictionHead}(\mathbf{H}^{(l)}), \qquad l=1,2,\dots,L_b.
+\end{equation}
+
+为了根据模型当前的预测状态自适应地调整监督强度，本文利用最终层预测与真实值之间的逐点误差来刻画不同空间-时间位置上的优化状态，并据此构造中间层监督的增强权重。具体地，定义误差图为
+\begin{equation}
+\mathbf{E} = \bigl|\hat{\mathbf{X}}^{(L_b)} - \mathbf{X}\bigr| \odot \mathbf{M}^{e},
+\end{equation}
+其中 $\mathbf{X}$ 为原始观测值，$\mathbf{M}^{e}$ 为评估掩码，$\odot$ 表示逐元素相乘。在训练时，$\mathbf{E}$ 通过梯度截断（stop-gradient）获得，以避免权重构造过程对主损失的梯度传播产生干扰。
+
+\subsection{基于分位数的离散增强方式}
+
+一种实现方式是基于分位数进行硬划分。对误差图 $\mathbf{E}$ 中评估掩码有效位置的误差值，计算第 $l$ 层对应的分位数阈值
+\begin{equation}
+\tau_l = Q_{\frac{l}{L_b}}\bigl(\{\mathbf{E}_{n,t} \mid \mathbf{M}^{e}_{n,t}=1\}\bigr), \qquad l=1,\dots,L_b-1,
+\end{equation}
+其中 $Q_q(\cdot)$ 表示 $q$-分位数函数。据此构造第 $l$ 层的难度掩码
+\begin{equation}
+M^{(l)}_{n,t} = \mathbb{1}[\mathbf{E}_{n,t} \leq \tau_l] \cdot \mathbf{M}^{e}_{n,t}, \qquad l=1,\dots,L_b-1.
+\end{equation}
+最后一层直接使用全部掩码：$\mathbf{M}^{(L_b)} = \mathbf{M}^{e}$。这样，浅层（$l$ 较小）仅监督误差较小的简单位置，深层逐步纳入误差更大的困难位置。
+
+在此方案下，第 $l$ 层的监督增强损失为
+\begin{equation}
+\mathcal{L}^{(l)}_{\mathrm{curr}} = \frac{1}{\sum \mathbf{M}^{(l)}}
+\bigl\|(\hat{\mathbf{X}}^{(l)} - \mathbf{X}) \odot \mathbf{M}^{(l)}\bigr\|_1.
+\end{equation}
+
+\subsection{基于软权重的连续增强方式}
+
+硬分位数划分虽然直观，但分位数边界处的样本存在离散跳变。为此，本文进一步提出基于连续软权重的方案。首先将误差归一化到 $[0,1]$：
+\begin{equation}
+\bar{\mathbf{E}}_{n,t} = \frac{\mathbf{E}_{n,t} - \mathbf{E}_{\min}}{\mathbf{E}_{\max} - \mathbf{E}_{\min} + \epsilon},
+\end{equation}
+其中 $\mathbf{E}_{\min}$、$\mathbf{E}_{\max}$ 分别为评估位置上误差的最小值和最大值。
+
+然后为每一层定义简易系数
+\begin{equation}
+\beta_l = \frac{L_b - l}{L_b - 1}, \qquad l=1,2,\dots,L_b-1,
+\end{equation}
+其中浅层 $\beta_l$ 接近 1，越深层越趋近于 0。每一层的软权重通过指数函数计算
+\begin{equation}
+w^{(l)}_{n,t} = \exp\!\Bigl(-\frac{\beta_l \cdot \bar{\mathbf{E}}_{n,t}}{\tau}\Bigr) \cdot \mathbf{M}^{e}_{n,t},
+\end{equation}
+其中 $\tau > 0$ 为温度超参数，控制权重分布的尖锐程度。$\tau$ 越小，权重越集中在简单位置；$\tau$ 越大，权重越趋向均匀。
+
+为保持各层损失量级的一致性，对权重进行归一化：
+\begin{equation}
+\tilde{w}^{(l)}_{n,t} = w^{(l)}_{n,t} \cdot \frac{|\mathcal{E}|}{\sum_{(n',t')} w^{(l)}_{n',t'}},
+\end{equation}
+其中 $|\mathcal{E}| = \sum \mathbf{M}^{e}$ 为评估位置总数。对应的加权监督损失为
+\begin{equation}
+\mathcal{L}^{(l)}_{\mathrm{curr}} = \frac{1}{\sum \tilde{w}^{(l)} \cdot \mathbf{M}^{e}} \bigl\|(\hat{\mathbf{X}}^{(l)} - \mathbf{X}) \odot \tilde{w}^{(l)}\bigr\|_1.
+\end{equation}
+
+若将公式延伸至最终层 $l=L_b$，则 $\beta_{L_b}=0$，所有权重退化为 1，软权重方案自然保证最终层在全部位置上接受均匀监督，与主损失 $\mathcal{L}_{\mathrm{main}}$ 一致。同时，当 $\tau \to 0$ 时，软权重趋向于将所有权重集中在最简单的位置上，此时与硬划分方案在行为上逐渐接近。
+
+\subsection{整体优化目标}
+
+综合以上设计，模型的总训练损失由三部分组成：最终层的主损失、中间层的监督增强损失以及可选的时间平滑正则项。
+
+最终层的主损失对所有评估位置施加标准 $L_1$ 监督：
+\begin{equation}
+\mathcal{L}_{\mathrm{main}} = \frac{1}{\sum \mathbf{M}^{e}} \bigl\|(\hat{\mathbf{X}}^{(L_b)} - \mathbf{X}) \odot \mathbf{M}^{e}\bigr\|_1.
+\end{equation}
+
+中间层的监督增强损失取各层均值：
+\begin{equation}
+\mathcal{L}_{\mathrm{curr}} = \frac{1}{L_b - 1}\sum_{l=1}^{L_b-1} \mathcal{L}^{(l)}_{\mathrm{curr}}.
+\end{equation}
+
+进一步引入时间平滑损失，通过鼓励预测序列的时间差分接近真值差分，增强时间维度上的连续性：
+\begin{equation}
+\mathcal{L}_{\mathrm{smooth}} = \frac{\sum_{n,t} |((\hat{\mathbf{X}}_{n,t+1}-\hat{\mathbf{X}}_{n,t})-(\mathbf{X}_{n,t+1}-\mathbf{X}_{n,t}))| \cdot \tilde{\mathbf{M}}_{n,t}}{\sum_{n,t} \tilde{\mathbf{M}}_{n,t}},
+\end{equation}
+其中 $\tilde{\mathbf{M}}_{n,t} = \min(\mathbf{M}^{e}_{n,t} + \mathbf{M}^{e}_{n,t+1},\, 1)$。
+
+总损失写为
+\begin{equation}\label{eq:total_loss}
+\mathcal{L} = \mathcal{L}_{\mathrm{main}} + \alpha \cdot \mathcal{L}_{\mathrm{curr}} + \lambda_s \cdot \mathcal{L}_{\mathrm{smooth}},
+\end{equation}
+其中 $\alpha$ 为渐进监督权重，$\lambda_s$ 为时间平滑权重。
+
+为避免训练初期模型预测误差不稳定所导致的难度度量不可靠，本文在前 $r_w$ 比例的训练 epoch 中不启用渐进监督（即 $\alpha=0$），待模型取得基本收敛后再逐步引入。具体地：
+\begin{equation}
+\alpha = \begin{cases}
+0, & \text{if } \mathrm{epoch} < r_w \cdot E_{\max}, \\
+\alpha_0, & \text{otherwise},
+\end{cases},
+\end{equation}
+其中 $r_w$ 为热身比例，$\alpha_0$ 为设定的渐进监督权重。
+    
+ \section{IASE-Net 实验与分析} 
+
+本节将对本章提出的输入与自适应监督增强驱动的层次化时空插补网络IASE-Net进行全面的实验验证与深度分析。首先，我们将介绍具体的实验设置。随后，通过详尽的定量对比分析，评估 IASE-Net 在整体插补精度上的表现，并围绕 IASE-Net 的两项核心架构设计，即简单插值的增强输入表示与自适应监督增强机制，设计并开展深入的消融实验，以剖析各关键组件对插补性能的实质性贡献。此外，还将结合可视化分析直观展示该模型在时序插补任务中的有效性。
+
+\subsection{实验设置}
+
+
+\subsubsection{数据集介绍}
+本章所有实验仍在 \textsf{AQI36}、\textsf{PeMS04} 和 \textsf{PeMS08} 三个具有代表性的真实世界时空数据集上进行，其数据预处理流程与第~\ref{sec:dataset} 节中的描述完全一致。
+
+
+\subsubsection{基线模型}
+基线模型设置与第~\ref{sec:baseline} 节基本一致。由于 IASE-Net 的研究目标不涉及扩散采样加速，其对比基线中移除了 DDIM 与 DPM-Solver++，其余基线均保留。
+
+\subsubsection{评估指标}
+为了客观地验证本章方法的有效性，实验主要聚焦于\textbf{插补准确性}这一核心维度进行评估，以严谨衡量模型的数据重建精度。具体评价指标如下：
+\begin{itemize}[noitemsep, topsep=0pt, partopsep=0pt, parsep=0pt, leftmargin=*]
+\item 准确性：本章实验采用平均绝对误差(MAE)作为核心的定量评估指标。MAE 能够直观地反映模型预测值与真实观测值之间的平均偏差，并且对真实时间序列中普遍存在的异常值具有较强的鲁棒性。在实际统计时，误差仅在掩码指示的缺失位置上进行计算。
+\end{itemize}
+
+\subsubsection{实验环境与实现细节}
+\paragraph{主要硬件环境}
+本章实验的硬件环境主要包括：
+\begin{itemize}[noitemsep, topsep=0pt, partopsep=0pt, parsep=0pt, leftmargin=*]
+    \item \textbf{GPU}：NVIDIA RTX 4090，用于模型训练与推理计算。
+    \item \textbf{CPU}：Intel(R) Xeon(R) Gold 5218R，用于数据处理与实验运行支撑。
+\end{itemize}
+
+\paragraph{主要软件环境}
+本章实验的软件环境主要包括：
+\begin{itemize}[noitemsep, topsep=0pt, partopsep=0pt, parsep=0pt, leftmargin=*]
+    \item \textbf{Python 3.10.13}：作为整体实验的开发与运行环境。
+    \item \textbf{PyTorch 2.1.1+cu118}：作为核心深度学习框架，用于模型的构建、训练与推理。
+    \item \textbf{PyTorch Lightning 2.5.1}：用于规范化训练流程，简化实验管理与工程实现。
+    \item \textbf{Pandas 2.2.3}：用于数据读取与预处理。
+    \item \textbf{NumPy 1.26.4}：用于基础数值计算与数组操作。
+\end{itemize}
+
+\paragraph{重要超参数}
+本章实验的重要超参数见表~\ref{tab:hierarchical_imputer_hyperparameters}。
+
+
+% \clearpage
+
+
+\subsection{整体插补精度与推理效率对比}
+
+\subsubsection{模型插补精度对比}
+% 如表~\ref{tab:mae_only_point_missing}所示，本文提出的多种方法,即面向扩散插补模型的两类加速方法，以及结合上下采样与时空特征提取的层次化网络模型,\textbf{均取得了较为优异的实验结果，验证了本文方法在时间序列插补任务中的有效性与适用性}。
+如表~\ref{tab:mae_only_point_missing} 所示，本文全面展示了 IASE-Net 与各类基线模型在 \textsf{AQI36}、\textsf{PeMS04} 以及 \textsf{PeMS08} 三个真实世界数据集上的插补精度（MAE）对比结果。
+
+\begin{table}[H]
+\caption{不同方法在 \textsf{AQI36}、\textsf{PeMS08}（Point-missing）和 \textsf{PeMS04}（Point-missing）上的 MAE 对比结果}
+\label{tab:mae_only_point_missing}
+\centering
+\small
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{lccc}
+\toprule
+\textbf{方法} & \textbf{\textsf{AQI36}} & \textbf{\textsf{PeMS04}（Point-missing）} & \textbf{\textsf{PeMS08}（Point-missing）} \\
+\midrule
+Mean              & 53.48 & 39.46 & 35.11 \\
+KNN               & 30.21 & 35.14 & 31.06 \\
+Lin-ITP           & 14.46 & 23.46 & 22.01 \\
+KF                & 54.09 & 43.15 & 37.51 \\
+MICE              & 30.37 & 27.15 & 24.76 \\
+VAR               & 15.64 & 20.44 & 17.92 \\
+TRMF              & 15.46 & 18.37 & 15.32 \\
+BATF              & 15.21 & 20.89 & 18.26 \\
+V-RIN             & 10.00 & 24.26 & 22.77 \\
+GP-VAE            & 25.71 & 27.54 & 19.99 \\
+rGAIN             & 15.37 & 15.21 & 10.98 \\
+BRITS             & 14.50 & 17.87 & 14.67 \\
+GRIN              & 12.08 & 16.94 & 11.37 \\
+ImputeFormer      & 11.55 & 17.25 & 12.91 \\
+\midrule
+CSDI        & 9.56  & 15.44 & 10.44 \\
+CSDI-TurboDTI-S1
+                  & 9.62 
+                  &  15.45 
+                  & 10.45 \\
+CSDI-TurboDTI-S2
+                  & 9.45 
+                  & 15.51 
+                  & 10.53 \\
+\midrule
+PriSTI      & 8.90  & 14.60  & 9.91 \\
+PriSTI-TurboDTI-S1
+                  & 8.92 
+                  & 14.58 
+                  & 9.99 \\
+                   
+PriSTI-TurboDTI-S2
+                  & 9.01 
+                  & 14.64
+                  & 10.10 \\
+\midrule
+Score-CDM    & 11.23 & 15.84 & 11.13  \\
+Score-CDM-TurboDTI-S1
+                  & 11.35 
+                  & 15.49 
+                  & 10.91 \\               
+Score-CDM-TurboDTI-S2
+                  & 11.37 
+                  & 15.59 
+                  & 11.26  \\        
+\midrule
+\textbf{IASE-Net}    
+                  & 8.58 & 14.18 & 9.59  \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\paragraph{其余方法的精度表现}
+传统统计方法与早期非扩散深度学习方法（如 Mean、BRITS 等）因时空建模能力不足，插补精度普遍遭遇瓶颈。而以 PriSTI、CSDI 为代表的前沿扩散生成模型，则凭借其范式优势取得了较低的 MAE，展现了扩散模型范式在时间序列插补领域的有效性。
+
+
+
+\paragraph{IASE-Net 的单步插补精度}
+% 最后，本文提出的输入与自适应监督增强驱动的层次化时空插补网络IASE-Net，虽然并未采用扩散模型的生成范式，但仍在各数据集上取得了具有竞争力的精度表现。以 \textsf{AQI36} 数据集为例，该模型的 MAE 达到8.58，远优于 BRITS（14.50）、ImputeFormer（11.55）等经典非扩散深度学习方法；在 \textsf{PeMS08} 和 \textsf{PeMS04} 上，其结果分别为9.59和14.18，不仅显著优于多数传统方法与非扩散深度模型，而且已经达到扩散插补模型及其加速变体的精度水平。这说明，在具备合理的输入增强机制、时空建模设计以及自适应监督增强机制后，\textbf{非扩散深度学习模型同样能够在时间序列插补任务中获得较强表现}。与此同时，这类方法避免了扩散模型在噪声调度、采样过程以及多步推理上的额外设计与训练负担，在模型实现、训练稳定性以及参数调节复杂度方面具有很高的实用价值。
+最后，本文提出的输入与自适应监督增强驱动的层次化时空插补网络 IASE-Net，虽然并未采用扩散模型的生成范式，但仍在各数据集上取得了具有竞争力的精度表现。以 \textsf{AQI36} 数据集为例，该模型的 MAE 达到 8.58，远优于 BRITS（14.50）、ImputeFormer（11.55）等经典非扩散深度学习方法；在 \textsf{PeMS08} 和 \textsf{PeMS04} 上，其 MAE 分别为 9.59 和 14.18，同样显著优于多数传统方法与非扩散深度模型。
+
+进一步与扩散插补模型及其加速变体相比，IASE-Net 的结果也达到了同一精度水平。在 \textsf{AQI36} 上，IASE-Net 不仅低于 CSDI（9.56）、PriSTI（8.90）和 Score-CDM（11.23）等扩散基线的 MAE，也优于 CSDI-TurboDTI-S1（9.62）、CSDI-TurboDTI-S2（9.45）、PriSTI-TurboDTI-S1（8.92）和 PriSTI-TurboDTI-S2（9.01）等 TurboDTI 加速变体；在 \textsf{PeMS04} 和 \textsf{PeMS08} 上，其结果也与扩散模型及 TurboDTI 加速版本保持在相近甚至更优的精度区间。需要强调的是，IASE-Net 与 TurboDTI 的目标并不相同：TurboDTI 旨在压缩已有扩散插补模型的多步采样和多样本集成开销，而 IASE-Net 则试图在非扩散范式下构建高精度单步插补网络。因此，该结果并不意味着两类方法相互替代，而是说明在合理的输入增强、时空建模设计以及自适应监督增强机制支撑下，\textbf{非扩散深度学习模型同样能够在时间序列插补任务中达到接近甚至超过扩散插补模型及其加速变体的精度表现}。与此同时，这类方法避免了扩散模型在噪声调度、采样过程以及多步推理上的额外设计与训练负担，在模型实现、训练稳定性以及参数调节复杂度方面具有较高的实用价值。
+
+% 综合来看，本文方法从两个方向推动了时间序列插补模型的发展：一方面，通过对扩散插补模型进行高效加速，在较少牺牲精度的前提下显著提升了实际可用性；另一方面，通过设计具有强时空建模能力的非扩散层次化网络，为摆脱扩散范式提供了一条可行路径。上述结果表明，无论是在提升扩散时序插补模型效率还是探索高精度非扩散时序插补模型这两个层面，本文方法都展现出了良好的效果与应用潜力。
+综合来看，本章提出的 IASE-Net 为时间序列插补模型的发展提供了一条极具突破性的新路径。通过创新性地引入简单插值的增强输入表示与自适应监督增强机制，构建了一个具备较强时空建模能力的非扩散插补模型。实验结果表明非扩散模型范式在时间序列插补任务中仍具有巨大的发展潜力，为后续高精度单步插补模型的设计提供了可行的思路。
+
+
+
+
+
+\subsection{输入与自适应监督增强的层次化时空插补网络IASE-Net具体实验分析}
+
+\subsubsection{增强输入表示构造的有效性}
+\begin{table}[H]
+    \centering
+    \caption{不同输入方式与损失设计对 IASE-Net 插补MAE的影响}
+    \label{tab:ablation_IASE}
+    \zihao{-4}
+    \begin{tabular}{lccc}
+        \toprule
+        方法 & \textsf{AQI36} & \textsf{PeMS04} & \textsf{PeMS08} \\
+        \midrule
+        \textbf{IASE-Net}      & \textbf{8.58} & \textbf{14.18} & \textbf{9.59} \\
+        线性插值预输入        & 9.44          & 15.08          & 10.32 \\
+        移除预插值           & 9.49          & 15.48          & 10.58 \\
+        移除自适应监督（仅全局 L1）& 8.82          & 14.25          & 9.70 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+表~\ref{tab:ablation_IASE}展示了\textbf{不同输入构造方式对插补精度的直接影响}。在完整 IASE-Net 架构下，模型在 AQI36、PeMS04 和 PeMS08 数据集上的 MAE 分别为 8.58、14.18 和 9.59。当完全移除预插值操作时，网络丧失了对缺失区域的初始感知，三个数据集的误差出现最大幅度的退化，MAE 分别激增至 9.49、15.48 和 10.58。若采用常规的线性插值作为预输入，MAE 则分别停留在 9.44、15.08 和 10.32。线性插值虽然在形式上补全了序列，但其生硬的直线过渡掩盖了真实路网和环境数据中固有的动态波动特性，对模型后续的特征提取构成了干扰。对比结果确证了本文设计的输入增强表示能够为深层网络提供更具物理意义的初始起点，大幅降低了基础重构难度。
+
+\subsubsection{IASE-Net时间序列插补可视化}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\linewidth]{浙江大学学位论文模板_zjuthesis/figure/IASE/sensor_20.pdf}
+    \caption{IASE-Net 在第 20 号传感器上的插补结果可视化}
+    \label{fig:sensor20_IASE}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\linewidth]{浙江大学学位论文模板_zjuthesis/figure/IASE/sensor_33.pdf}
+    \caption{IASE-Net 在第 33 号传感器上的插补结果可视化}
+    \label{fig:sensor33_IASE}
+\end{figure}
+图\ref{fig:sensor20_IASE}和图\ref{fig:sensor33_IASE}直观展示了IASE-Net在\textsf{AQI36}数据集上的优异插补能力。在20号传感器上，26个缺失点的平均绝对误差为8.82，而在33号传感器上，16个缺失点的平均误差仅为7.99。与PriSTI及其加速版本中的最优MAE（20号传感器为7.50，33号传感器为10.26）相比，IASE-Net在20号传感器上增加了1.32，在33号传感器上减少了2.38。这表明，\textbf{IASE-Net展现出了与扩散插补模型相媲美的潜力，甚至在某些情况下，能够超越扩散插补模型的表现}。
+
+\section{本章小结}
+本章针对时间序列插补中输入参考不足、时空依赖建模不充分以及深层网络训练约束不合理等问题，提出了一种输入与自适应监督增强驱动的层次化时空插补网络，简称 IASE-Net。该方法从输入构造、特征建模和训练机制三个层面进行了系统设计。在输入端，本文采用简单插值策略对缺失位置进行预填充，为模型提供连续且稳定的初始参考，从而缓解缺失区域缺乏上下文所带来的建模困难。在结构设计上，本文构建了结合上下采样与时空特征提取的层次化网络结构，通过多尺度时间建模和跨变量依赖学习，有效提升了模型对复杂时空关联模式的表达能力。在训练阶段，本文提出了自适应监督增强机制，通过逐层增强的监督信号，引导浅层学习较为简单的特征表示，深层逐步覆盖更复杂的任务，并在时间维度上保证预测结果的平滑性与连续性。该机制不仅减轻了浅层的优化压力，还提高了整体优化过程的稳定性与有效性。总体而言，IASE-Net 在保持模型结构清晰的同时，实现了输入增强、层次化建模与自适应监督增强三者的有机结合，为时间序列插补任务提供了一种有效的建模方案。
+
+详尽的实验评估进一步验证了所提出方法的有效性。在 \textsf{AQI36}、\textsf{PeMS04} 和 \textsf{PeMS08} 三个真实世界数据集上的实验结果表明，IASE-Net 相较于现有经典非扩散深度学习模型取得了显著的性能提升，并展现出了与主流扩散插补模型相当甚至更优的插补精度。与此同时，消融实验进一步验证了增强输入表示和自适应监督增强机制两项核心设计对提升模型性能的重要作用。
+
+
+
+
+
+\subsubsection{自适应监督增强机制的作用}
+
+\textbf{针对模型监督方式的消融结果表明了优化策略的有效性}。当去除本文设计的自适应监督增强机制，转而仅在网络最终输出端施加全局的 L1 损失时，AQI36、PeMS04 和 PeMS08 的 MAE 分别回退至 8.82、14.25 和 9.70。这种精度损耗暴露了深层模型在反向传播中固有的梯度传递瓶颈。仅依靠单一的最深层误差进行约束，浅层网络很难学到具备明确时空连续性的特征表示，进而影响了整体的拟合精度。本文采用的自适应监督机制通过在中间层注入对应的重构约束，同时适当强调预测序列时间差分和真值差分的接近程度，增强了对模型整体的监督能力，有效提升了模型的最终精度。   
+    
+    \begin{table}[htbp]
+        \centering
+        \caption{\label{tab:hierarchical_imputer_hyperparameters}输入与自适应监督增强驱动的层次化时空插补网络的核心超参数设置}
+        \resizebox{0.85\linewidth}{!}{
+        \begin{tabularx}{\linewidth}{l|>{\centering\arraybackslash}X>{\centering\arraybackslash}X>{\centering\arraybackslash}X}
+            \hline
+            \textbf{参数} & \textsf{AQI36} & \textsf{PeMS04} & \textsf{PeMS08} \\ \hline
+            输入构成 & 预插值+掩码 & 预插值+掩码 & 预插值+掩码 \\ \hline
+            预插值形式 & 前向插值 & 后向插值 & 后向插值 \\ \hline
+            序列长度 $L$ & 36 & 24 & 24 \\ \hline
+            特征维度 $K$ & 36 & 307 & 170 \\ \hline
+            隐层维度 $d_{\mathrm{model}}$ & 64 & 64 & 64 \\ \hline
+            时间位置编码维度 & 128 & 128 & 128 \\ \hline
+            特征位置编码维度 & 16 & 16 & 16 \\ \hline
+            模块堆叠数 & 3 & 3 & 3 \\ \hline
+            下采样比例 & $L \rightarrow L/3 \rightarrow L/12$ & $L \rightarrow L/3 \rightarrow L/6$ & $L \rightarrow L/3 \rightarrow L/6$ \\ \hline
+            Transformer头数 & 8 & 8 & 8 \\ \hline
+            Dropout & 0.1 & 0.1 & 0.1 \\ \hline
+            每个Transformer子模块层数 & 1 & 1 & 1 \\ \hline
+            中间层监督数 & 3 & 3 & 3 \\ \hline
+            渐进监督形式 & 软权重方案 & 硬分位数划分 & 软权重方案 \\ \hline
+            渐进监督权重 $\alpha_0$ & 0.3 & 0.3 & 0.3 \\ \hline
+            热身比例 $r_w$ & 0.1 & 0.1 & 0.1 \\ \hline
+            温度系数 $\tau$ & 0.5 & -- & 0.5 \\ \hline
+            时间平滑权重 $\lambda_s$ & 0.03 & 0 & 0.01 \\ \hline
+            输出头结构 & Linear-ReLU-Linear & Linear-ReLU-Linear & Linear-ReLU-Linear \\ \hline
+            训练轮数 & 200 & 40 & 40 \\ \hline
+            学习率 & $5\times10^{-4}$ & $5\times10^{-4}$ & $5\times10^{-4}$ \\ \hline
+            输出头结构 & Linear-ReLU-Linear & Linear-ReLU-Linear & Linear-ReLU-Linear \\ \hline
+            学习率 & 5e-4 & 5e-4 & 5e-4 \\ \hline
+        \end{tabularx}
+        }
+    \end{table}

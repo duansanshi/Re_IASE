@@ -1,0 +1,60 @@
+# Local environments
+.conda/
+.vscode/
+
+# Python caches
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Experiment logs and outputs
+logs/
+lightning_logs/
+ldvae_logs/
+checkpoints/
+mid_checkpoints/
+mid_supervision/lightning_logs/
+NewImputer/lightning_logs/
+NewImputer/UNET/logs/
+NewImputer/UNET/checkpoints/
+save/
+student_save/
+outputs_conv_vae/
+attention_heatmaps_*/
+pictures/
+
+# Model checkpoints and generated tensors
+*.pth
+*.pt
+*.ckpt
+*.whl
+*.pk
+*.pkl
+*.h5
+
+# Large or local data directories
+data/PEMS04/
+data/PEMS08/
+data/metr_la/
+data/pems_bay/
+
+# Generated result files
+results.txt
+*_results.txt
+quantile_experiment_results.csv
+train_samples_median.csv
+valid_samples_median.csv
+test_samples_median.csv
+reshaped_observed_data_feature*.png
+
+# Binary papers and generated images kept local
+*.pdf
+*.png
+
+# IDE metadata and embedded repositories
+.idea/
+**/.idea/
+PriSTI/
+
+# External benchmark cached storage
+ImputeFormer-main/experiments/tsl/.storage/

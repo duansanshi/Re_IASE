@@ -1,0 +1,109 @@
+\section{难度感知的逐层渐进监督机制}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.85\linewidth]{浙江大学学位论文模板_zjuthesis/figure/MidSupervision.pdf}
+    \caption{\label{fig:curriculum}难度感知的逐层渐进监督机制示意图}
+\end{figure}
+
+在本文的层次化网络结构中，由多个时空模块堆叠而成的深层网络可以为每一层生成中间预测。一种直接的做法是对所有中间层施加统一的全局监督，然而实验发现这种方式效果有限：浅层网络由于容量受限，难以同时准确重建简单模式和复杂模式。若强制要求浅层在所有位置上都趋近真值，反而会干扰其学习稳定的基础表示。
+
+受课程学习思想的启发，本文提出一种难度感知的逐层渐进监督机制：利用深层网络的预测误差作为各位置难度的度量，让浅层主要在"简单"位置上接受监督，而深层逐步覆盖更多"困难"位置，最终由最后一层负责全部位置的重建。该方法具有明确的层次化分工思想——浅层先打好基础、深层再精细修正，从而使整体优化更加高效和稳定。
+
+\subsection{难度度量的构建}
+
+设模型共有 $L_b$ 个层次化时空块，每一层输出 $\mathbf{H}^{(l)}$ 经共享预测头得到中间预测
+\begin{equation}
+\hat{\mathbf{X}}^{(l)} = \mathrm{PredictionHead}(\mathbf{H}^{(l)}), \qquad l=1,2,\dots,L_b.
+\end{equation}
+
+为衡量各空间-时间位置的插补难度，本文以最终层预测的逐点误差作为难度指标。具体地，定义误差图
+\begin{equation}
+\mathbf{E} = \bigl|\hat{\mathbf{X}}^{(L_b)} - \mathbf{X}\bigr| \odot \mathbf{M}^{e},
+\end{equation}
+其中 $\mathbf{X}$ 为原始观测值，$\mathbf{M}^{e}$ 为评估掩码，$\odot$ 表示逐元素相乘。在训练时，$\mathbf{E}$ 通过梯度截断（stop-gradient）获得，以避免难度权重的计算影响主损失的梯度传播。
+
+\subsection{硬分位数划分方案}
+
+一种实现方式是基于分位数进行硬划分。对误差图 $\mathbf{E}$ 中评估掩码有效位置的误差值，计算第 $l$ 层对应的分位数阈值
+\begin{equation}
+\tau_l = Q_{\frac{l}{L_b}}\bigl(\{E_{n,t} \mid M^{e}_{n,t}=1\}\bigr), \qquad l=1,\dots,L_b-1,
+\end{equation}
+其中 $Q_q(\cdot)$ 表示 $q$-分位数函数。据此构造第 $l$ 层的难度掩码
+\begin{equation}
+M^{(l)}_{n,t} = \mathbb{1}[E_{n,t} \leq \tau_l] \cdot M^{e}_{n,t}, \qquad l=1,\dots,L_b-1,
+\end{equation}
+最后一层直接使用全部掩码：$\mathbf{M}^{(L_b)} = \mathbf{M}^{e}$。这样，浅层（$l$ 较小）仅监督误差较小的"简单"位置，深层逐步纳入误差更大的"困难"位置。
+
+在此方案下，第 $l$ 层的渐进监督损失为
+\begin{equation}
+\mathcal{L}^{(l)}_{\mathrm{curr}} = \frac{1}{\sum \mathbf{M}^{(l)}}
+\bigl\|(\hat{\mathbf{X}}^{(l)} - \mathbf{X}) \odot \mathbf{M}^{(l)}\bigr\|_1.
+\end{equation}
+
+\subsection{软权重连续方案}
+
+硬分位数划分虽然直观，但分位数边界处的样本存在离散跳变。为此，本文进一步提出基于连续软权重的方案。首先将误差归一化到 $[0,1]$：
+\begin{equation}
+\bar{E}_{n,t} = \frac{E_{n,t} - E_{\min}}{E_{\max} - E_{\min} + \epsilon},
+\end{equation}
+其中 $E_{\min}$、$E_{\max}$ 分别为评估位置上误差的最小值和最大值。
+
+然后为每一层定义简易系数
+\begin{equation}
+\beta_l = 1 - \frac{l}{L_b - 1}, \qquad l=0,1,\dots,L_b-2,
+\end{equation}
+其中浅层 $\beta_l$ 接近 1，越深层越趋近于 0。每一层的软权重通过指数函数计算
+\begin{equation}
+w^{(l)}_{n,t} = \exp\!\Bigl(-\frac{\beta_l \cdot \bar{E}_{n,t}}{\tau}\Bigr) \cdot M^{e}_{n,t},
+\end{equation}
+其中 $\tau > 0$ 为温度超参数，控制权重分布的"尖锐"程度。$\tau$ 越小，权重越集中在简单位置；$\tau$ 越大，权重越趋向均匀。
+
+为保持各层损失量级的一致性，对权重进行归一化：
+\begin{equation}
+\tilde{w}^{(l)}_{n,t} = w^{(l)}_{n,t} \cdot \frac{|\mathcal{E}|}{\sum_{(n',t')} w^{(l)}_{n',t'}},
+\end{equation}
+其中 $|\mathcal{E}| = \sum \mathbf{M}^{e}$ 为评估位置总数。对应的加权监督损失为
+\begin{equation}
+\mathcal{L}^{(l)}_{\mathrm{curr}} = \frac{1}{\sum \tilde{w}^{(l)} \cdot \mathbf{M}^{e}}
+\bigl\|(\hat{\mathbf{X}}^{(l)} - \mathbf{X}) \odot \tilde{w}^{(l)}\bigr\|_1.
+\end{equation}
+
+由于 $\beta_{L_b-1}=0$ 时所有权重退化为 1，软权重方案自然保证最深的中间层在全部位置上接受均匀监督。同时，当 $\tau \to 0$ 时，软权重趋向于将所有权重集中在最简单的位置上，此时与硬划分方案在行为上逐渐趋近。
+
+\subsection{总损失函数}
+
+综合以上设计，模型的总训练损失由三部分组成：最终层的主损失、中间层的渐进监督损失以及可选的时间平滑正则项。
+
+最终层的主损失对所有评估位置施加标准 $L_1$ 监督：
+\begin{equation}
+\mathcal{L}_{\mathrm{main}} = \frac{1}{\sum \mathbf{M}^{e}} \bigl\|(\hat{\mathbf{X}}^{(L_b)} - \mathbf{X}) \odot \mathbf{M}^{e}\bigr\|_1.
+\end{equation}
+
+中间层的渐进监督损失取各层均值：
+\begin{equation}
+\mathcal{L}_{\mathrm{curr}} = \frac{1}{L_b - 1}\sum_{l=1}^{L_b-1} \mathcal{L}^{(l)}_{\mathrm{curr}}.
+\end{equation}
+
+时间平滑损失通过鼓励预测序列的时间差分接近真值差分，增强时间维度上的连续性：
+\begin{equation}
+\mathcal{L}_{\mathrm{smooth}} = \frac{\sum_{n,t} |((\hat{X}_{n,t+1}-\hat{X}_{n,t})-(X_{n,t+1}-X_{n,t}))| \cdot \tilde{M}_{n,t}}{\sum_{n,t} \tilde{M}_{n,t}},
+\end{equation}
+其中 $\tilde{M}_{n,t} = \min(M^{e}_{n,t} + M^{e}_{n,t+1},\, 1)$。
+
+总损失写为
+\begin{equation}\label{eq:total_loss}
+\mathcal{L} = \mathcal{L}_{\mathrm{main}} + \alpha \cdot \mathcal{L}_{\mathrm{curr}} + \lambda_s \cdot \mathcal{L}_{\mathrm{smooth}},
+\end{equation}
+其中 $\alpha$ 为渐进监督权重，$\lambda_s$ 为时间平滑权重。
+
+为避免训练初期模型预测误差不稳定所导致的难度度量不可靠，本文在前 $r_w$ 比例的训练 epoch 中不启用渐进监督（即 $\alpha=0$），待模型取得基本收敛后再逐步引入。具体地：
+\begin{equation}
+\alpha = \begin{cases}
+0, & \text{if } \mathrm{epoch} < r_w \cdot E_{\max}, \\
+\alpha_0, & \text{otherwise},
+\end{cases}
+\end{equation}
+其中 $r_w$ 为热身比例，$\alpha_0$ 为设定的渐进监督权重。
+
+该损失函数设计的核心思想可以归纳为：通过自适应地将中间层的监督集中在其"力所能及"的位置上，避免浅层承受过高的优化压力，同时利用多层预测的逐步细化为最终层提供更好的初始状态。这一机制与课程学习中"由易到难"的原则一致，但在本文中，"由浅到深"的网络层次结构自然地对应了"从简单到困难"的任务分解。

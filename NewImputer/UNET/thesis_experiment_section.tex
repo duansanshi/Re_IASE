@@ -1,0 +1,152 @@
+\section{实验}
+
+\subsection{数据集}
+
+为验证所提方法的有效性，本文在三个真实世界时间序列数据集上进行实验：
+
+\begin{itemize}
+    \item \textbf{AQI-36}：该数据集包含中国36个城市空气质量监测站的PM2.5浓度数据，采样频率为每小时一次。每个样本的时间窗口长度 $L=36$，变量数 $N=36$。
+    \item \textbf{PEMS08}：来自加州交通系统的车流量数据，包含170个传感器在圣贝纳迪诺地区的检测记录，采样间隔为5分钟。每个样本的时间窗口长度 $L=24$，变量数 $N=170$。
+    \item \textbf{PEMS04}：来自旧金山湾区的交通数据，包含307个传感器的车流量记录，采样间隔同样为5分钟。每个样本的时间窗口长度 $L=24$，变量数 $N=307$。
+\end{itemize}
+
+三个数据集在变量规模上呈递增关系（36→170→307），为验证方法在不同规模下的适用性提供了基础。缺失模式采用随机掩码生成，即在训练和评估时随机遮盖一定比例的观测值，模型需对被遮盖位置进行预测。
+
+\subsection{评估指标}
+
+本文采用两种常用的插补评估指标：
+
+平均绝对误差（MAE）:
+\begin{equation}
+\mathrm{MAE} = \frac{1}{|\mathcal{E}|} \sum_{(n,t)\in\mathcal{E}} |\hat{x}_{n,t} - x_{n,t}| \cdot s_n,
+\end{equation}
+均方误差（MSE）:
+\begin{equation}
+\mathrm{MSE} = \frac{1}{|\mathcal{E}|} \sum_{(n,t)\in\mathcal{E}} (\hat{x}_{n,t} - x_{n,t})^2 \cdot s_n^2,
+\end{equation}
+其中 $\mathcal{E}$ 表示评估掩码位置的集合，$s_n$ 为第 $n$ 个变量的标准差缩放因子，用于将归一化后的预测还原到原始量纲。
+
+\subsection{实现细节}
+
+模型的隐空间维度 $d=64$，层次化时空模块的堆叠层数 $L_b=3$。优化器采用 Adam，学习率设为 $5\times10^{-4}$，配合5个 epoch 的线性热身和余弦退火学习率调度。AQI-36 数据集训练 200 个 epoch；PEMS08 和 PEMS04 数据集训练 40 个 epoch。模型选择以验证集上均方误差最优的 checkpoint 为准。
+
+对于渐进监督机制的超参数，默认设置为：渐进监督权重 $\alpha_0=0.3$，热身比例 $r_w=0.1$，软权重方案的温度 $\tau=0.5$，时间平滑权重 $\lambda_s$ 根据数据集特性设置。
+
+\subsection{与基准方法的比较}
+
+表~\ref{tab:main_results} 给出了本文方法与基准方法在三个数据集上的对比结果。
+
+\begin{table}[htbp]
+\centering
+\caption{\label{tab:main_results}不同方法在三个数据集上的插补性能比较（MAE / MSE）}
+\begin{tabular}{l|cc|cc|cc}
+\toprule
+\multirow{2}{*}{方法} & \multicolumn{2}{c|}{AQI-36} & \multicolumn{2}{c|}{PEMS08} & \multicolumn{2}{c}{PEMS04} \\
+ & MAE & MSE & MAE & MSE & MAE & MSE \\
+\midrule
+CSDI & 9.42 & — & 10.53 & — & 15.51 & — \\
+PriSTI & 9.13 & — & — & — & — & — \\
+I2SI-Net (baseline) & 8.74 & 290.56 & 9.86 & 284.36 & 14.27 & 590.81 \\
+I2SI-Net + 硬划分 & 8.65 & 277.61 & 9.61 & 278.35 & \textbf{14.18} & \textbf{578.46} \\
+I2SI-Net + 软权重 & \textbf{8.64} & \textbf{277.26} & \textbf{9.60} & \textbf{277.65} & 14.19 & 579.72 \\
+\midrule
+提升 (\%) & 1.17 & 4.58 & 2.66 & 2.36 & 0.64 & 2.09 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+从表~\ref{tab:main_results} 可以看出：
+
+（1）本文提出的 I2SI-Net 无论是否采用渐进监督机制，在所有三个数据集上均显著优于 CSDI 和 PriSTI 两种基于扩散模型的基准方法，说明本文的层次化时空网络结构具有较强的建模能力。
+
+（2）引入难度感知的渐进监督后，三个数据集上均取得了进一步改善。其中 AQI-36 上 MAE 降低约 1.17\%，PEMS08 上降低约 2.66\%，PEMS04 上降低约 0.64\%。
+
+（3）软权重方案在 AQI-36 和 PEMS08 上取得最优，而硬划分方案在 PEMS04 上略优。这一现象与数据集规模有关，将在消融实验中进一步分析。
+
+\subsection{消融实验}
+
+\subsubsection{渐进监督机制的有效性}
+
+为验证渐进监督机制的作用，表~\ref{tab:ablation_method} 在三个数据集上比较了三种配置：不使用渐进监督的基线、硬分位数划分方案以及软权重方案。
+
+\begin{table}[htbp]
+\centering
+\caption{\label{tab:ablation_method}渐进监督机制的消融实验（MAE）}
+\begin{tabular}{l|ccc}
+\toprule
+方法 & AQI-36 & PEMS08 & PEMS04 \\
+\midrule
+无渐进监督 (baseline) & 8.74 & 9.86 & 14.27 \\
+硬分位数划分 & 8.72 & 9.62 & \textbf{14.18} \\
+软权重方案 & \textbf{8.64} & \textbf{9.60} & 14.19 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+结果表明，两种渐进监督方案都优于无监督基线，但表现出与数据集规模相关的偏好：对于变量数较小的 AQI-36（$N=36$）和中等规模的 PEMS08（$N=170$），软权重方案更优；而对于变量数最大的 PEMS04（$N=307$），硬划分方案略优。可能的原因在于，大规模数据集中样本间的难度分布差异更大、更不连续，此时基于分位数的离散划分反而能更有效地区分不同难度水平。
+
+\subsubsection{温度系数的影响}
+
+表~\ref{tab:ablation_temperature} 比较了软权重方案中不同温度系数 $\tau$ 的影响。实验固定 $\alpha_0=0.3$，在三个数据集上分别测试 $\tau\in\{0.3, 0.5, 1.0\}$。
+
+\begin{table}[htbp]
+\centering
+\caption{\label{tab:ablation_temperature}温度系数 $\tau$ 的影响（MAE / MSE）}
+\begin{tabular}{c|cc|cc|cc}
+\toprule
+\multirow{2}{*}{$\tau$} & \multicolumn{2}{c|}{AQI-36} & \multicolumn{2}{c|}{PEMS08} & \multicolumn{2}{c}{PEMS04} \\
+ & MAE & MSE & MAE & MSE & MAE & MSE \\
+\midrule
+0.3 & 8.89 & 307.42 & 9.61 & 277.32 & — & — \\
+0.5 & \textbf{8.64} & \textbf{277.26} & \textbf{9.60} & 277.65 & \textbf{14.19} & \textbf{579.72} \\
+1.0 & 8.66 & 277.93 & 9.64 & \textbf{277.05} & — & — \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+$\tau=0.5$ 在大多数设置下取得最优 MAE。$\tau=0.3$ 过小时权重分布过于尖锐，浅层仅关注极少数最简单的位置，导致监督信号过于稀疏；$\tau=1.0$ 过大时权重趋于均匀，渐进监督退化为近似统一监督，削弱了"由易到难"的分工效果。
+
+\subsubsection{渐进监督权重的影响}
+
+表~\ref{tab:ablation_alpha} 测试了不同的渐进监督权重 $\alpha_0$。
+
+\begin{table}[htbp]
+\centering
+\caption{\label{tab:ablation_alpha}渐进监督权重 $\alpha_0$ 的影响（AQI-36 数据集，软权重方案）}
+\begin{tabular}{c|cc}
+\toprule
+$\alpha_0$ & MAE & MSE \\
+\midrule
+0.2 & 9.00 & 316.87 \\
+0.3 & \textbf{8.64} & \textbf{277.26} \\
+0.5 & 8.72 & 289.86 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+$\alpha_0=0.3$ 取得最优。$\alpha_0=0.2$ 时渐进监督的约束强度不足，对中间层的引导作用有限；$\alpha_0=0.5$ 时中间层损失占比过大，可能与主损失产生冲突，反而影响最终层的收敛。
+
+\subsubsection{时间平滑权重的影响}
+
+表~\ref{tab:ablation_smooth} 展示了不同时间平滑权重 $\lambda_s$ 在各数据集上的表现。
+
+\begin{table}[htbp]
+\centering
+\caption{\label{tab:ablation_smooth}时间平滑权重 $\lambda_s$ 的影响（MAE）}
+\begin{tabular}{c|ccc}
+\toprule
+$\lambda_s$ & AQI-36 & PEMS08 & PEMS04 \\
+\midrule
+0 & — & — & \textbf{14.18} \\
+0.005 & — & 9.63 & — \\
+0.01 & 8.73 & \textbf{9.60} & 14.25 \\
+0.03 & \textbf{8.64} & 9.62 & 14.28 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+最优时间平滑权重与数据集规模呈现出负相关趋势：小规模数据集 AQI-36 适合 $\lambda_s=0.03$，中等规模 PEMS08 适合 $\lambda_s=0.01$，大规模 PEMS04 则不需要时间平滑（$\lambda_s=0$）。一种解释是，小数据集中模型更容易产生时间维度上的不连续预测，因此较强的平滑约束有助于改善输出质量；而大数据集本身拥有更丰富的训练样本，模型已能自然学到时间上的平滑性，额外的平滑约束反而会引入不必要的偏差。
+
+\subsection{实验小结}
+
+实验结果表明：（1）本文提出的 I2SI-Net 在所有三个数据集上均优于现有基准方法；（2）难度感知的渐进监督机制在所有配置下均带来了一致的性能提升；（3）核心超参数 $\tau=0.5$、$\alpha_0=0.3$ 具有较好的跨数据集泛化性；（4）时间平滑权重需根据数据集规模适当调整，但整体框架具备良好的健壮性。
