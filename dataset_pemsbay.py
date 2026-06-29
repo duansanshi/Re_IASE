@@ -147,3 +147,19 @@ def get_dataloader(batch_size, device, val_len=0.1, test_len=0.2, missing_patter
 
     return train_loader, valid_loader, test_loader, scaler, mean_scaler
 
+
+    
+if __name__ == "__main__":
+    train_dataset = PemsBAY_Dataset(mode="train", val_len=0.1, test_len=0.2)
+    valid_dataset = PemsBAY_Dataset(mode="valid", val_len=0.1, test_len=0.2)
+    test_dataset = PemsBAY_Dataset(mode="test", val_len=0.1, test_len=0.2)
+
+    print("Train dataset size:", len(train_dataset))
+    print("Valid dataset size:", len(valid_dataset))
+    print("Test dataset size:", len(test_dataset))
+
+    # 打印 use_index 的内容以进一步检查
+    print("Train dataset use_index:", train_dataset.use_index[:10])  # 只打印前10个
+    print("Valid dataset use_index:", valid_dataset.use_index[:10])  # 只打印前10个
+    print("Test dataset use_index:", test_dataset.use_index[:10])    # 只打印前10个
+

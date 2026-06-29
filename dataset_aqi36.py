@@ -10,6 +10,10 @@ from utils import get_randmask, get_hist_mask
 class AQI36_Dataset(Dataset):
     def __init__(self, eval_length=36, target_dim=36, mode="train", val_len=0.1, is_interpolate=False,
                  target_strategy='hybrid', mask_sensor=None, missing_ratio=None):
+        self.train_samples = pd.read_csv("/home/duanlei/PriSTI/train_samples_median.csv")
+        self.valid_samples = pd.read_csv("/home/duanlei/PriSTI/valid_samples_median.csv")
+        self.test_samples = pd.read_csv("/home/duanlei/PriSTI/test_samples_median.csv")
+
         self.eval_length = eval_length
         self.target_dim = target_dim
         self.is_interpolate = is_interpolate
@@ -166,6 +170,20 @@ class AQI36_Dataset(Dataset):
             itp_data = torchcde.linear_interpolation_coeffs(
                 itp_data.permute(1, 0).unsqueeze(-1)).squeeze(-1).permute(1, 0)
             s["coeffs"] = itp_data.numpy()
+        if self.mode == "train":
+            start_idx = org_index * self.eval_length
+            end_idx = min(start_idx + self.eval_length, len(self.train_samples))
+            student_sample = self.train_samples[start_idx:end_idx]
+        elif self.mode == "valid":
+            start_idx = org_index * self.eval_length
+            end_idx = min(start_idx + self.eval_length, len(self.valid_samples))
+            student_sample = self.valid_samples[start_idx:end_idx]
+        else:
+            start_idx = org_index * self.eval_length
+            end_idx = min(start_idx + self.eval_length, len(self.test_samples))
+            student_sample = self.test_samples[start_idx:end_idx]
+        s["student_sample"] = student_sample.values
+
         return s
 
     def __len__(self):
@@ -175,7 +193,7 @@ class AQI36_Dataset(Dataset):
 def get_dataloader(batch_size, device, val_len=0.1, is_interpolate=False, num_workers=4, target_strategy='hybrid', mask_sensor=None):
     dataset = AQI36_Dataset(mode="train", is_interpolate=is_interpolate, target_strategy=target_strategy, mask_sensor=mask_sensor)
     train_loader = DataLoader(
-        dataset, batch_size=batch_size, num_workers=num_workers, shuffle=True
+        dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False
     )
     dataset_test = AQI36_Dataset(mode="test", is_interpolate=is_interpolate, target_strategy=target_strategy, mask_sensor=mask_sensor)
     test_loader = DataLoader(

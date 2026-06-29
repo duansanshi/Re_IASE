@@ -21,7 +21,7 @@ class PriSTI(nn.Module):
         self.emb_total_dim = self.emb_time_dim + self.emb_feature_dim
         self.embed_layer = nn.Embedding(
             num_embeddings=self.target_dim, embedding_dim=self.emb_feature_dim
-        )
+        ).to(device)
 
         config_diff = config["diffusion"]
         config_diff["side_dim"] = self.emb_total_dim
@@ -29,7 +29,7 @@ class PriSTI(nn.Module):
         self.device = device
 
         input_dim = 2
-        self.diffmodel = Guide_diff(config_diff, input_dim, target_dim, self.use_guide)
+        self.diffmodel = Guide_diff(config_diff, input_dim, target_dim, self.use_guide).to(device)
 
         # parameters for diffusion models
         self.num_steps = config_diff["num_steps"]
@@ -114,7 +114,6 @@ class PriSTI(nn.Module):
             else:
                 total_input = ((1 - cond_mask) * noisy_data).unsqueeze(1)
         return total_input
-
     def impute(self, observed_data, cond_mask, side_info, n_samples, itp_info):
         B, K, L = observed_data.shape
 
@@ -158,6 +157,7 @@ class PriSTI(nn.Module):
 
             imputed_samples[:, i] = current_sample.detach()
         return imputed_samples
+    
 
     def forward(self, batch, is_train=1):
         (
@@ -169,12 +169,15 @@ class PriSTI(nn.Module):
             _,
             coeffs,
             cond_mask,
+            student_sample
         ) = self.process_data(batch)
 
         side_info = self.get_side_info(observed_tp, cond_mask)
         itp_info = None
         if self.use_guide:
             itp_info = coeffs.unsqueeze(1)
+        itp_info = observed_data*cond_mask + (1-cond_mask)*student_sample
+        itp_info = itp_info.unsqueeze(1)
 
         loss_func = self.calc_loss if is_train == 1 else self.calc_loss_valid
         output = loss_func(observed_data, cond_mask, observed_mask, side_info, itp_info, is_train)
@@ -190,6 +193,7 @@ class PriSTI(nn.Module):
             cut_length,
             coeffs,
             _,
+            student_sample
         ) = self.process_data(batch)
 
         with torch.no_grad():
@@ -200,6 +204,8 @@ class PriSTI(nn.Module):
             itp_info = None
             if self.use_guide:
                 itp_info = coeffs.unsqueeze(1)
+            itp_info = observed_data*cond_mask + student_sample*(1-cond_mask)
+            itp_info = itp_info.unsqueeze(1)
 
             samples = self.impute(observed_data, cond_mask, side_info, n_samples, itp_info)
 
@@ -208,10 +214,11 @@ class PriSTI(nn.Module):
         return samples, observed_data, target_mask, observed_mask, observed_tp
 
 
-class PriSTI_aqi36(PriSTI):
-    def __init__(self, config, device, target_dim=36, seq_len=36):
-        super(PriSTI_aqi36, self).__init__(target_dim, seq_len, config, device)
+class OneStep_Model(PriSTI):
+    def __init__(self, config, device, target_dim=36,seq_len=36):
+        super().__init__(target_dim,seq_len,config, device)
         self.config = config
+        self.device = device
 
     def process_data(self, batch):
         observed_data = batch["observed_data"].to(self.device).float()
@@ -220,11 +227,13 @@ class PriSTI_aqi36(PriSTI):
         gt_mask = batch["gt_mask"].to(self.device).float()
         cut_length = batch["cut_length"].to(self.device).long()
         for_pattern_mask = batch["hist_mask"].to(self.device).float()
+        student_sample = batch["student_sample"].to(self.device).float()
         coeffs = None
         if self.config['model']['use_guide']:
             coeffs = batch["coeffs"].to(self.device).float()
         cond_mask = batch["cond_mask"].to(self.device).float()
 
+        student_sample = student_sample.permute(0, 2, 1) # [B, K, L]
         observed_data = observed_data.permute(0, 2, 1)  # [B, K, L]
         observed_mask = observed_mask.permute(0, 2, 1)
         gt_mask = gt_mask.permute(0, 2, 1)
@@ -243,6 +252,141 @@ class PriSTI_aqi36(PriSTI):
             cut_length,
             coeffs,
             cond_mask,
+            student_sample
+        )
+
+    def process_data_metrla(self, batch):
+        observed_data = batch["observed_data"].to(self.device).float()
+        observed_mask = batch["observed_mask"].to(self.device).float()
+        observed_tp = batch["timepoints"].to(self.device).float()
+        gt_mask = batch["gt_mask"].to(self.device).float()
+        cut_length = batch["cut_length"].to(self.device).long()
+        coeffs = None
+        if self.config['model']['use_guide']:
+            coeffs = batch["coeffs"].to(self.device).float()
+        cond_mask = batch["cond_mask"].to(self.device).float()
+
+        observed_data = observed_data.permute(0, 2, 1)  # [B, K, L]
+        observed_mask = observed_mask.permute(0, 2, 1)
+        gt_mask = gt_mask.permute(0, 2, 1)
+        cond_mask = cond_mask.permute(0, 2, 1)
+        for_pattern_mask = observed_mask
+
+        if self.config['model']['use_guide']:
+            coeffs = coeffs.permute(0, 2, 1)
+
+        return (
+            observed_data,
+            observed_mask,
+            observed_tp,
+            gt_mask,
+            for_pattern_mask,
+            cut_length,
+            coeffs,
+            cond_mask,
+        )
+    def process_data_pemsbay(self, batch):
+        observed_data = batch["observed_data"].to(self.device).float()
+        observed_mask = batch["observed_mask"].to(self.device).float()
+        observed_tp = batch["timepoints"].to(self.device).float()
+        gt_mask = batch["gt_mask"].to(self.device).float()
+        cut_length = batch["cut_length"].to(self.device).long()
+        coeffs = None
+        if self.config['model']['use_guide']:
+            coeffs = batch["coeffs"].to(self.device).float()
+        cond_mask = batch["cond_mask"].to(self.device).float()
+
+        observed_data = observed_data.permute(0, 2, 1)  # [B, K, L]
+        observed_mask = observed_mask.permute(0, 2, 1)
+        gt_mask = gt_mask.permute(0, 2, 1)
+        cond_mask = cond_mask.permute(0, 2, 1)
+        for_pattern_mask = observed_mask
+
+        if self.config['model']['use_guide']:
+            coeffs = coeffs.permute(0, 2, 1)
+
+        return (
+            observed_data,
+            observed_mask,
+            observed_tp,
+            gt_mask,
+            for_pattern_mask,
+            cut_length,
+            coeffs,
+            cond_mask,
+        )
+    #for training need data(B,K,L)
+    def student_impute(self,observed_data,cond_mask,side_info,itp_info=None):
+        original_noise = torch.randn_like(observed_data).to(observed_data)
+        if itp_info is None:
+            cond_obs = (cond_mask*observed_data).unsqueeze(1)  #(B,1,K,L)
+            noisy_target = ((1-cond_mask)*original_noise).unsqueeze(1)  #(B,1,K,L)
+            diff_input = torch.cat([cond_obs,noisy_target],dim=1) #(B,2,K,L)
+        else:
+            diff_input = ((1-cond_mask)*original_noise).unsqueeze(1)
+        predicted_noise = self.diffmodel(diff_input,side_info,torch.tensor([self.num_steps-1]).to(self.device),itp_info,cond_mask)
+        x_0 = original_noise - predicted_noise
+        return x_0
+    #for test need data(B,K,L)
+    def real_impute(self,observed_data,cond_mask,side_info,n_samples,itp_info=None):
+        B, K, L = observed_data.shape
+
+        imputed_samples = torch.zeros(B, n_samples, K, L).to(self.device)
+        for i in range(n_samples):
+            noise = torch.randn_like(observed_data).to(observed_data)
+            if itp_info is None:
+                cond_obs = (cond_mask*observed_data).unsqueeze(1)  #(B,1,K,L)
+                noisy_target = ((1-cond_mask)*noise).unsqueeze(1)  #(B,1,K,L)
+                diff_input = torch.cat([cond_obs,noisy_target],dim=1) #(B,2,K,L)
+            else:
+                diff_input = ((1-cond_mask)*noise).unsqueeze(1)
+            predicted_noise = self.diffmodel(diff_input,side_info,torch.tensor([self.num_steps-1]).to(self.device),itp_info,cond_mask)
+            x_0 = noise - predicted_noise
+            imputed_samples[:,i] = x_0.detach()
+        return imputed_samples
+    
+
+
+
+
+class PriSTI_aqi36(PriSTI):
+    def __init__(self, config, device, target_dim=36, seq_len=24):
+        super(PriSTI_aqi36, self).__init__(target_dim, seq_len, config, device)
+        self.config = config
+
+    def process_data(self, batch):
+        observed_data = batch["observed_data"].to(self.device).float()
+        observed_mask = batch["observed_mask"].to(self.device).float()
+        observed_tp = batch["timepoints"].to(self.device).float()
+        gt_mask = batch["gt_mask"].to(self.device).float()
+        cut_length = batch["cut_length"].to(self.device).long()
+        for_pattern_mask = batch["hist_mask"].to(self.device).float()
+        student_sample = batch["student_sample"].to(self.device).float()
+        coeffs = None
+        if self.config['model']['use_guide']:
+            coeffs = batch["coeffs"].to(self.device).float()
+        cond_mask = batch["cond_mask"].to(self.device).float()
+
+        student_sample = student_sample.permute(0, 2, 1) # [B, K, L]
+        observed_data = observed_data.permute(0, 2, 1)  # [B, K, L]
+        observed_mask = observed_mask.permute(0, 2, 1)
+        gt_mask = gt_mask.permute(0, 2, 1)
+        for_pattern_mask = for_pattern_mask.permute(0, 2, 1)
+        cond_mask = cond_mask.permute(0, 2, 1)
+
+        if self.config['model']['use_guide']:
+            coeffs = coeffs.permute(0, 2, 1)
+
+        return (
+            observed_data,
+            observed_mask,
+            observed_tp,
+            gt_mask,
+            for_pattern_mask,
+            cut_length,
+            coeffs,
+            cond_mask,
+            student_sample
         )
 
 

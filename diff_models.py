@@ -1,5 +1,8 @@
-from layers import *
+import torch
 
+from layers import *
+from transformer import *
+from modeltcn import TCN
 
 class Guide_diff(nn.Module):
     def __init__(self, config, inputdim=1, target_dim=36, is_itp=False):
@@ -27,7 +30,7 @@ class Guide_diff(nn.Module):
         elif config["adj_file"] == 'metr-la':
             self.adj = get_similarity_metrla(thr=0.1)
         elif config["adj_file"] == 'pems-bay':
-            self.adj = get_similarity_pemsbay(thr=0.1)
+            self.adj = torch.randn(325,325).uniform_(0., 0.1)
         self.device = config["device"]
         self.support = compute_support_gwn(self.adj, device=config["device"])
         self.is_adp = config["is_adp"]
@@ -107,20 +110,28 @@ class NoiseProject(nn.Module):
         self.mid_projection = Conv1d_with_init(channels, 2 * channels, 1)
         self.output_projection = Conv1d_with_init(channels, 2 * channels, 1)
 
-        self.forward_time = TemporalLearning(channels=channels, nheads=nheads, is_cross=is_cross_t)
+        # self.forward_time = TemporalLearning(channels=channels, nheads=nheads, is_cross=is_cross_t)
         self.forward_feature = SpatialLearning(channels=channels, nheads=nheads, target_dim=target_dim,
                                                order=order, include_self=include_self, device=device, is_adp=is_adp,
                                                adj_file=adj_file, proj_t=proj_t, is_cross=is_cross_s)
+        self.update_gate = MessagePN2(c_in=24, c_out=24, heads=nheads, layers=1, channels=channels)
+        self.spa_gate = Messagespa(c_in=207, c_out=207, heads=nheads, layers=1, channels=channels)
+        self.tcn = TCN(24, 24, [24,24,24])
+        adj1 = torch.randn(325,325).to(device)
+        adj1.require_grad = True
+        self.impgconv = ImpSGConv(layers=1, adj1=adj1)
 
     def forward(self, x, side_info, diffusion_emb, itp_info, support):
         B, channel, K, L = x.shape
         base_shape = x.shape
         x = x.reshape(B, channel, K * L)
         diffusion_emb = self.diffusion_projection(diffusion_emb).unsqueeze(-1)  # (B,channel,1)
-        y = x + diffusion_emb
+        y = x
 
-        y = self.forward_time(y, base_shape, itp_info)
+        y = self.forward_time(y, base_shape)
+        # y = self.tcn(y)
         y = self.forward_feature(y, base_shape, support, itp_info)  # (B,channel,K*L)
+        # y = self.forward_feature(y, base_shape)
         y = self.mid_projection(y)  # (B,2*channel,K*L)
 
         _, side_dim, _, _ = side_info.shape
@@ -139,3 +150,127 @@ class NoiseProject(nn.Module):
 
         return (x + residual) / math.sqrt(2.0), skip
 
+    def forward_time(self, y, base_shape):
+        B, channel, K, L = base_shape
+        if L == 1:
+            return y
+        C = channel
+        y = y.reshape(B, channel, K, L).permute(0, 2, 1, 3).reshape(B * K, channel, L)
+        attn = torch.zeros_like(y)
+        # y = y.reshape(B, channel, K, L).reshape(B * channel, K, L)
+        # y = torch.cat([self.time_shift(y)[:, :L, :C // 2], y[:, :L, C // 2:]], dim=2).transpose(1, 2) # 只需增加这句
+
+        y, attn = self.update_gate(y, base_shape)
+        # y = self.tcn(y)
+        # y = self.impgconv(y, base_shape)
+
+        # y = y.reshape(B, channel, K, L).reshape(B, channel, K*L)
+        y = y.reshape(B, K, channel, L).permute(0, 2, 1, 3).reshape(B, channel, K * L)
+
+        return y
+
+
+
+class MessagePN2(nn.Module):
+    def __init__(self, c_in, c_out, heads, layers, channels):
+        super(MessagePN2, self).__init__()
+        self.c_in = c_in
+        self.c_tmp = 2 * c_in
+
+        self.attn = MultiHeadAttention(heads, 3, self.c_in, 0.1)
+        # self.linear = nn.Linear(self.c_in, 2 * self.c_in)
+        self.mlp = nn.Sequential(
+            nn.Linear(2 * self.c_in, 6 * (self.c_tmp + self.c_in)),  ###
+            nn.Dropout(0.3),
+            nn.ReLU(),
+            nn.Linear(6 * (self.c_tmp + self.c_in), c_out),
+            nn.ReLU(inplace=False),
+        )
+        self.SRU = SRU(64,
+                       group_num=4,
+                       gate_treshold=0.5)
+
+    def forward(self, data, base_shape):
+
+        out, attn = self.attn(data, data, data, base_shape)
+        out1 = torch.cat((out, data), dim=-1)
+
+
+        return self.mlp(out1), attn
+
+
+
+
+class Messagespa(nn.Module):
+    def __init__(self, c_in, c_out, heads, layers, channels):
+        super(Messagespa, self).__init__()
+        self.c_in = c_in
+        self.c_tmp = 2 * c_in
+
+        self.attn = MultiHeadAttention(heads, 27, self.c_in, 0.1)
+        # self.linear = nn.Linear(self.c_in, 2 * self.c_in)
+        self.mlp = nn.Sequential(
+            nn.Linear(2 * self.c_in, 2 * (self.c_tmp + self.c_in)),  ###
+            nn.Dropout(0.3),
+            nn.ReLU(),
+            nn.Linear(2 * (self.c_tmp + self.c_in), c_out),
+            nn.ReLU(inplace=False),
+        )
+        self.SRU = SRU(64,
+                       group_num=4,
+                       gate_treshold=0.5)
+
+    def forward(self, data, base_shape):
+        # context = context.reshape(base_shape)
+        # context = self.SRU(context)
+        # context = context.reshape(B * channel, K, L)
+
+        out, attn = self.attn(data, data, data, base_shape)
+        out1 = torch.cat((out, data), dim=-1)
+        # out = self.linear(data)
+
+        return self.mlp(out1), attn
+
+
+
+
+
+class ImpSGConv(nn.Module): #   (B H L)
+    def __init__(self, layers, adj1 ,dropout=0.2):
+        super(ImpSGConv, self).__init__()
+
+        self.y = None
+        u1, self.e, v = torch.linalg.svd(adj1)
+        self.encoder = GConv(
+            e = self.e,
+            u1 = u1,
+            v = v,
+            d_model=64,
+            adj=adj1,
+            d_state=64,
+            l_max=25,
+            bidirectional=True,
+            kernel_dim=32,
+            n_scales=None,
+            decay_min=2,
+            decay_max=2,
+        )
+        self.ELayers = nn.ModuleList(
+            [self.encoder for _ in range(1)])
+    def forward(self, train, base_shape, return_kernel=True):
+        y = train
+        # train = train.reshape(base_shape)
+        B, channel, K, L = base_shape
+        # train = train.reshape(B * channel, K, L)
+        k2 = None
+
+
+        for layer in self.ELayers:
+
+            y, k1 = layer(y, base_shape)
+
+            y = (y + train) / 2
+
+        y = y.reshape(base_shape)
+        y = y.reshape(B, channel, K * L)
+        return y

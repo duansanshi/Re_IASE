@@ -87,6 +87,33 @@ def get_similarity_pemsbay(thr=0.1, force_symmetric=False, sparse=False):
         adj = sps.coo_matrix(adj)
     return adj
 
+def get_similarity_pems08(thr=0.1, force_symmetric=False, sparse=False):
+    dist = np.load('./data/PEMS08/adj_matrix.npy')
+    finite_dist = dist.reshape(-1)
+    finite_dist = finite_dist[~np.isinf(finite_dist)]
+    sigma = finite_dist.std()
+    adj = np.exp(-np.square(dist / sigma))
+    adj[adj < thr] = 0.
+    if force_symmetric:
+        adj = np.maximum.reduce([adj, adj.T])
+    if sparse:
+        import scipy.sparse as sps
+        adj = sps.coo_matrix(adj)
+    return adj
+
+def get_similarity_pems04(thr=0.1, force_symmetric=False, sparse=False):
+    dist = np.load('./data/PEMS04/adj_matrix.npy')
+    finite_dist = dist.reshape(-1)
+    finite_dist = finite_dist[~np.isinf(finite_dist)]
+    sigma = finite_dist.std()
+    adj = np.exp(-np.square(dist / sigma))
+    adj[adj < thr] = 0.
+    if force_symmetric:
+        adj = np.maximum.reduce([adj, adj.T])
+    if sparse:
+        import scipy.sparse as sps
+        adj = sps.coo_matrix(adj)
+    return adj
 
 # in Graph-wavenet
 def asym_adj(adj):
@@ -102,3 +129,8 @@ def compute_support_gwn(adj, device=None):
     adj_mx = [asym_adj(adj), asym_adj(np.transpose(adj))]
     support = [torch.tensor(i).to(device) for i in adj_mx]
     return support
+
+
+if __name__ == '__main__':
+    adj_aqi = get_adj_AQI36()
+    print(asym_adj(adj_aqi).sum())

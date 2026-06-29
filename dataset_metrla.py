@@ -78,6 +78,9 @@ class MetrLA_Dataset(Dataset):
 
         val_start = int((1 - val_len - test_len) * len(df))
         test_start = int((1 - test_len) * len(df))
+        print(val_start)
+        print(test_start)
+        print(len(df))
         c_data = (
              (df.fillna(0).values - self.train_mean) / self.train_std
         ) * ob_mask
@@ -149,7 +152,7 @@ def get_dataloader(batch_size, device, val_len=0.1, test_len=0.2, missing_patter
                    is_interpolate=False, num_workers=4, target_strategy='random'):
     dataset = MetrLA_Dataset(mode="train", val_len=val_len, test_len=test_len, missing_pattern=missing_pattern,
                              is_interpolate=is_interpolate, target_strategy=target_strategy)
-    train_loader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, shuffle=True)
+    train_loader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False)
     dataset_test = MetrLA_Dataset(mode="test", val_len=val_len, test_len=test_len, missing_pattern=missing_pattern,
                                   is_interpolate=is_interpolate, target_strategy=target_strategy)
     test_loader = DataLoader(dataset_test, batch_size=batch_size, num_workers=num_workers, shuffle=False)
@@ -188,3 +191,10 @@ def get_test_randmask(observed_mask, missing_ratio):
 
     cond_mask = (rand_for_mask > 0).reshape(observed_mask.shape).float()
     return cond_mask
+
+if __name__ == "__main__":
+    dataset = MetrLA_Dataset()
+    train_loader, valid_loader, test_loader, scaler, mean_scaler = get_dataloader(batch_size=4,device="cuda:0")
+    print(len(train_loader))
+    print(len(valid_loader))
+    print(len(test_loader))

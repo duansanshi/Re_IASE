@@ -44,29 +44,34 @@ def main(args):
         is_interpolate=config["model"]["use_guide"], num_workers=args.num_workers,
         target_strategy=args.targetstrategy,
     )
+    for batch in test_loader:
+        this = batch
+        break
+    print(batch["observed_data"].shape)
+
     model = PriSTI_MetrLA(config, args.device).to(args.device)
 
-    if args.modelfolder == "":
-        train(
-            model,
-            config["train"],
-            train_loader,
-            valid_loader=valid_loader,
-            foldername=foldername,
-        )
-    else:
-        model.load_state_dict(torch.load("./save/" + args.modelfolder + "/model.pth"))
+    # if args.modelfolder == "":
+    #     train(
+    #         model,
+    #         config["train"],
+    #         train_loader,
+    #         valid_loader=valid_loader,
+    #         foldername=foldername,
+    #     )
+    # else:
+    #     model.load_state_dict(torch.load("./save/" + args.modelfolder + "/model.pth"))
 
-    logging.basicConfig(filename=foldername + '/test_model.log', level=logging.DEBUG)
-    logging.info("model_name={}".format(args.modelfolder))
-    evaluate(
-        model,
-        test_loader,
-        nsample=args.nsample,
-        scaler=scaler,
-        mean_scaler=mean_scaler,
-        foldername=foldername,
-    )
+    # logging.basicConfig(filename=foldername + '/test_model.log', level=logging.DEBUG)
+    # logging.info("model_name={}".format(args.modelfolder))
+    # evaluate(
+    #     model,
+    #     test_loader,
+    #     nsample=args.nsample,
+    #     scaler=scaler,
+    #     mean_scaler=mean_scaler,
+    #     foldername=foldername,
+    # )
 
 
 if __name__ == '__main__':

@@ -93,13 +93,37 @@ class DiffusionEmbedding(nn.Module):
         self.projection1 = nn.Linear(embedding_dim, projection_dim)
         self.projection2 = nn.Linear(projection_dim, projection_dim)
 
+    # def forward(self, diffusion_step):
+    #     x = self.embedding[diffusion_step]
+    #     x = self.projection1(x)
+    #     x = F.silu(x)
+    #     x = self.projection2(x)
+    #     x = F.silu(x)
+    #     return x
     def forward(self, diffusion_step):
-        x = self.embedding[diffusion_step]
-        x = self.projection1(x)
-        x = F.silu(x)
-        x = self.projection2(x)
-        x = F.silu(x)
+        if diffusion_step.dtype in [torch.int32, torch.int64]:
+            x = self.embedding[diffusion_step]
+            x = self.projection1(x)
+            x = F.silu(x)
+            x = self.projection2(x)
+            x = F.silu(x)
+        else:
+            x = self._lerp_embedding(diffusion_step)
+            x = self.projection1(x)
+            x = F.silu(x)
+            x = self.projection2(x)
+            x = F.silu(x)
         return x
+
+    def _lerp_embedding(self, t):
+        t = t.to(self.embedding.device)
+        low_idx = torch.floor(t).long()
+        high_idx = torch.ceil(t).long()
+        low = self.embedding[low_idx]
+        high = self.embedding[high_idx]
+        # return low + (high - low) * (t - low_idx).unsqueeze(1)
+        return low + (high - low) * (t - low_idx)[..., None]
+
 
     def _build_embedding(self, num_steps, dim=64):
         steps = torch.arange(num_steps).unsqueeze(1)  # (T,1)
@@ -351,6 +375,9 @@ class Attn_spa(nn.Module):
         # attention
         dots = torch.einsum('bhnd,bhkd->bhnk', queries, keys) * (d_h ** -0.5)
         attn = dots.softmax(dim=-1)
+        # print("Spatial_attn")
+        # print(attn.shape)
+        # torch.save(attn,"AAAAAAAAAAAAAtention.pt")
         attn = self.dropout(attn)
         out = torch.einsum('bhnk,bhkd->bhnd', attn, values)
 

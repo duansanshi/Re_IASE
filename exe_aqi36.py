@@ -38,13 +38,15 @@ def main(args):
     os.makedirs(foldername, exist_ok=True)
     with open(foldername + "config.json", "w") as f:
         json.dump(config, f, indent=4)
-
+    print(args.val_len)
     train_loader, valid_loader, test_loader, scaler, mean_scaler = get_dataloader(
         config["train"]["batch_size"], device=args.device, val_len=args.val_len,
         is_interpolate=config["model"]["use_guide"], num_workers=args.num_workers,
         target_strategy=args.targetstrategy, mask_sensor=config["model"]["mask_sensor"]
     )
+    
     model = PriSTI_aqi36(config, args.device).to(args.device)
+    #model.load_state_dict(torch.load("/home/duanlei/PriSTI/save/aqi36/model.pth", map_location=args.device))
 
     if args.modelfolder == "":
         train(
@@ -57,6 +59,8 @@ def main(args):
     else:
         model.load_state_dict(torch.load("./save/" + args.modelfolder + "/model.pth", map_location=args.device))
 
+    model.load_state_dict(torch.load("/home/duanlei/PriSTI/save/Full_Nodes_AQI/tmp_model194.pth", map_location=args.device))
+        
     logging.basicConfig(filename=foldername + '/test_model.log', level=logging.DEBUG)
     logging.info("model_name={}".format(args.modelfolder))
     evaluate(
@@ -67,21 +71,24 @@ def main(args):
         mean_scaler=mean_scaler,
         foldername=foldername,
     )
+    print(foldername)
+
+   
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="PriSTI")
     parser.add_argument("--config", type=str, default="base.yaml")
-    parser.add_argument('--device', default='cuda:0', help='Device for Attack')
+    parser.add_argument('--device', default='cuda:5', help='Device for Attack')
     parser.add_argument('--num_workers', type=int, default=16, help='Device for Attack')
     parser.add_argument("--modelfolder", type=str, default="")
     parser.add_argument(
-        "--targetstrategy", type=str, default="hybrid", choices=["hybrid", "random", "historical"]
+        "--targetstrategy", type=str, default="historical", choices=["hybrid", "random", "historical"]
     )
     parser.add_argument(
         "--val_len", type=float, default=0.1, help="the ratio of data used for validation (value:[0-1])"
     )
-    parser.add_argument("--nsample", type=int, default=100)
+    parser.add_argument("--nsample", type=int, default=1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--unconditional", action="store_true")
 
@@ -89,3 +96,5 @@ if __name__ == '__main__':
     print(args)
 
     main(args)
+
+    

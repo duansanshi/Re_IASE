@@ -36,6 +36,7 @@ def train(
                 optimizer.zero_grad()
                 loss = model(train_batch)
                 loss.backward()
+                #print(model.revin_layer.affine_weight)
                 avg_loss += loss.item()
                 optimizer.step()
                 it.set_postfix(
@@ -49,6 +50,7 @@ def train(
             if is_lr_decay:
                 lr_scheduler.step()
         if valid_loader is not None and (epoch_no + 1) % valid_epoch_interval == 0 and (epoch_no + 1) > config["epochs"] * 0.5:
+        #if valid_loader is not None and (epoch_no + 1) % valid_epoch_interval == 0 :
             model.eval()
             avg_loss_valid = 0
             with torch.no_grad():
@@ -136,6 +138,28 @@ def evaluate(model, test_loader, nsample=100, scaler=1, mean_scaler=0, foldernam
                 all_observed_time.append(observed_time)
                 all_generated_samples.append(samples)
 
+                # #for revin
+                # (
+                #     observed_data,
+                #     observed_mask,
+                #     observed_tp,
+                #     gt_mask,
+                #     _,
+                #     cut_length,
+                #     coeffs,
+                #     _,
+                # ) = model.process_data(test_batch)
+                # #model.revin_layer.print_info()
+                # result = samples_median.values
+                # result = model.revin_layer(result,coeffs.clone().permute(0,2,1),mode='denorm')
+                # #model.revin_layer.print_info()
+                # mse_current = (
+                #     ((result - c_target) * eval_points) ** 2
+                # )* (scaler ** 2)
+                # mae_current = (
+                #     torch.abs((result - c_target) * eval_points) 
+                # )* scaler
+
                 mse_current = (
                     ((samples_median.values - c_target) * eval_points) ** 2
                 ) * (scaler ** 2)
@@ -143,6 +167,12 @@ def evaluate(model, test_loader, nsample=100, scaler=1, mean_scaler=0, foldernam
                     torch.abs((samples_median.values - c_target) * eval_points) 
                 ) * scaler
 
+                # mse_current = (
+                #     ((samples_median.values - c_target) * eval_points) ** 2
+                # ) 
+                # mae_current = (
+                #     torch.abs((samples_median.values - c_target) * eval_points) 
+                # ) 
                 mse_total += mse_current.sum().item()
                 mae_total += mae_current.sum().item()
                 evalpoints_total += eval_points.sum().item()
@@ -263,3 +293,71 @@ def get_block_mask(observed_mask, target_strategy='block'):
         cond_mask = block_mask * cond_mask
 
     return cond_mask
+
+
+def compute_information_richness(cond_mask, sigma=1.0):
+    L, K = cond_mask.shape
+    time_richness = torch.zeros_like(cond_mask, dtype=torch.float32)
+    space_richness = torch.zeros_like(cond_mask, dtype=torch.float32)
+    sigma = torch.tensor(sigma, dtype=torch.float32)
+
+    # 预计算高斯核
+    dist = torch.arange(L, device=cond_mask.device).unsqueeze(1) - torch.arange(L, device=cond_mask.device).unsqueeze(0)  # (L, L)
+    gaussian_kernel = torch.exp(-torch.abs(dist).float() ** 2 / (2 * sigma ** 2))  # (L, L)
+
+    # 计算时间丰富度
+    time_richness = torch.matmul(gaussian_kernel, cond_mask.float())  # (L, K)
+    time_richness[cond_mask != 0] = 0  # 仅保留未知值位置的结果
+
+    # 计算空间丰富度
+    num_known_per_time = cond_mask.sum(dim=1, keepdim=True)  # 每个时间点上的已知值数量 (L, 1)
+    space_richness = torch.where(cond_mask == 0, num_known_per_time, torch.tensor(0.0))  # 仅对未知值位置赋值
+
+    return time_richness, space_richness
+
+def rank_elements(tensor, cond_mask, descending=True):
+    """
+    对输入的 (L, K) 或 (B, L, K) 张量进行排序，生成位次矩阵。
+    确保：
+    1. tensor 中越大的位置，rank 越小。
+    2. 无论 tensor 的值如何，cond_mask=1 的位置的 rank 大于 cond_mask=0 的位置的 rank。
+    Args:
+        tensor: (L, K) 或 (B, L, K), 输入张量。
+        cond_mask: (L, K) 或 (B, L, K), 二值掩码张量，1 表示已知值，0 表示未知值。
+        descending: bool, 是否按降序排序。
+    Returns:
+        rank_matrix: (L, K) 或 (B, L, K), 位次矩阵，值表示元素在排序中的位次。
+    """
+    if tensor.dim() == 2:  # 如果输入是 (L, K)
+        L, K = tensor.shape
+        flat_tensor = tensor.reshape(-1)  # 展平为一维向量 (L * K,)
+        flat_cond_mask = cond_mask.reshape(-1)  # 展平 cond_mask
+
+        # 将 cond_mask=1 的位置的值设置为一个较小的固定值
+        flat_tensor[flat_cond_mask == 1] = -1e6
+
+        # 排序
+        _, indices = torch.sort(flat_tensor, descending=descending)  # 按降序排序
+        rank_matrix = torch.zeros_like(flat_tensor, dtype=torch.float32)  # 初始化位次矩阵
+        rank_matrix[indices] = torch.arange(L * K, dtype=torch.float32, device=tensor.device)  # 生成位次
+        rank_matrix = rank_matrix.reshape(L, K)  # 恢复为 (L, K) 的形状
+
+    elif tensor.dim() == 3:  # 如果输入是 (B, L, K)
+        B, L, K = tensor.shape
+        flat_tensor = tensor.reshape(B, -1)  # 展平为 (B, L * K)
+        flat_cond_mask = cond_mask.reshape(B, -1)  # 展平 cond_mask
+
+        # 将 cond_mask=1 的位置的值设置为一个较小的固定值
+        flat_tensor[flat_cond_mask == 1] = -1e6
+
+        # 排序
+        _, indices = torch.sort(flat_tensor, dim=1, descending=descending)  # 按降序排序
+        rank_matrix = torch.zeros_like(indices, dtype=torch.float32, device=tensor.device)  # 初始化位次矩阵
+        for b in range(B):
+            rank_matrix[b, indices[b]] = torch.arange(L * K, dtype=torch.float32, device=tensor.device)  # 生成位次
+        rank_matrix = rank_matrix.reshape(B, L, K)  # 恢复为 (B, L, K) 的形状
+
+    else:
+        raise ValueError("Input tensor must be 2D (L, K) or 3D (B, L, K).")
+    
+    return rank_matrix
